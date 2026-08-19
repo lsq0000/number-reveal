@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="两个人各自锁定一个数字，等双方都提交后再同时揭晓。无需登录，不保存记录。"
+    />
+    <meta name="theme-color" content="#f4f1e8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+    />
+    <title>同揭 · 两个人同时公布数字</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"
+      integrity="sha384-x0YgkOr/3UOZP2CRDxGW9e0Q+2Qjyr3uJrm4xU32Y7ZCNAo7Cc7bjhrZMi/dwczu"
+      crossorigin="anonymous"
+    ></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="site-header shell">
+      <a class="brand" href="./" aria-label="同揭首页">
+        <span class="brand-mark" aria-hidden="true">
+          <span></span><span></span>
+        </span>
+        <span>同揭</span>
+      </a>
+      <div class="privacy-chip" aria-label="本次使用不保存记录">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        不留记录
+      </div>
+    </header>
+
+    <main id="main" class="shell">
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow"><span aria-hidden="true">↗</span> 两个人 · 一个答案时刻</p>
+        <h1 id="page-title">先各自写下，<br />再一起揭晓。</h1>
+        <p class="hero-copy">
+          看不到对方的答案，也改不了自己的答案。等两个人都锁定后，数字才会同时出现。
+        </p>
+      </section>
+
+      <section class="connection-card" aria-labelledby="connection-heading">
+        <div class="connection-summary">
+          <div
+            id="connectionIndicator"
+            class="connection-indicator is-connecting"
+            aria-hidden="true"
+          >
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <h2 id="connection-heading">正在准备房间</h2>
+            <p id="connectionStatus" role="status" aria-live="polite">
+              正在建立安全的点对点连接…
+            </p>
+          </div>
+        </div>
+
+        <div id="shareArea" class="share-area" hidden>
+          <label for="shareLink">把这个链接发给另一位参与者</label>
+          <div class="share-row">
+            <input id="shareLink" type="text" readonly aria-describedby="shareHelp" />
+            <button id="copyButton" class="secondary-button compact-button" type="button">
+              复制链接
+            </button>
+            <button
+              id="nativeShareButton"
+              class="secondary-button compact-button"
+              type="button"
+              hidden
+            >
+              分享
+            </button>
+          </div>
+          <p id="shareHelp" class="field-help">链接只用于让对方进入当前房间。</p>
+        </div>
+
+        <div id="joinArea" class="join-area" hidden>
+          <span class="mini-label">受邀加入</span>
+          <p>保持此页面打开，连接成功后就可以填写数字。</p>
+        </div>
+
+        <div id="errorBanner" class="error-banner" role="alert" hidden>
+          <span id="errorMessage"></span>
+          <button id="retryButton" type="button">重新连接</button>
+        </div>
+      </section>
+
+      <section id="gameCard" class="game-card" aria-labelledby="roundHeading">
+        <div class="round-header">
+          <div>
+            <p class="section-kicker">当前回合</p>
+            <h2 id="roundHeading">写下你的数字</h2>
+          </div>
+          <span id="roundBadge" class="round-badge">等待连接</span>
+        </div>
+
+        <div class="participant-row" aria-label="双方提交状态">
+          <div id="localParticipant" class="participant" data-state="waiting">
+            <span class="participant-icon" aria-hidden="true">我</span>
+            <span>
+              <strong>你</strong>
+              <small id="localStatus">待填写</small>
+            </span>
+          </div>
+          <span class="participant-link" aria-hidden="true"></span>
+          <div id="remoteParticipant" class="participant" data-state="offline">
+            <span class="participant-icon" aria-hidden="true">TA</span>
+            <span>
+              <strong>对方</strong>
+              <small id="remoteStatus">尚未连接</small>
+            </span>
+          </div>
+        </div>
+
+        <form id="numberForm" class="number-form" novalidate>
+          <label for="numberInput">你的数字</label>
+          <div class="number-input-wrap">
+            <input
+              id="numberInput"
+              name="number"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="80"
+              placeholder="例如 −12.5"
+              aria-describedby="inputHelp inputError"
+              required
+            />
+            <span class="input-caret" aria-hidden="true">#</span>
+          </div>
+          <p id="inputHelp" class="field-help">
+            支持负数、小数和科学记数法，例如 −3、0.25 或 1e6。
+          </p>
+          <p id="inputError" class="input-error" role="alert" hidden></p>
+          <button id="commitButton" class="primary-button" type="submit" disabled>
+            <span>锁定我的数字</span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <p class="lock-note">
+            <span aria-hidden="true">◇</span>
+            一旦锁定，本轮不能修改；双方锁定后会自动揭晓。
+          </p>
+        </form>
+
+        <div id="waitingPanel" class="waiting-panel" hidden>
+          <div class="waiting-orbit" aria-hidden="true">
+            <span></span>
+          </div>
+          <h3>你的数字已经锁定</h3>
+          <p id="waitingMessage" role="status" aria-live="polite">正在等待对方提交…</p>
+        </div>
+
+        <div id="resultPanel" class="result-panel" hidden>
+          <div class="reveal-heading">
+            <span class="reveal-spark" aria-hidden="true">✦</span>
+            <div>
+              <p class="section-kicker">同时揭晓</p>
+              <h3 id="resultHeading" tabindex="-1">答案都在这里</h3>
+            </div>
+          </div>
+
+          <div class="result-grid" aria-label="双方数字">
+            <article class="result-tile result-local">
+              <span>你的数字</span>
+              <strong id="localResult"></strong>
+            </article>
+            <article class="result-tile result-remote">
+              <span>对方的数字</span>
+              <strong id="remoteResult"></strong>
+            </article>
+          </div>
+
+          <button id="nextRoundButton" class="primary-button" type="button">
+            <span>再来一轮</span>
+            <span aria-hidden="true">↻</span>
+          </button>
+          <p id="nextRoundStatus" class="field-help centered" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="trust-row" aria-label="隐私说明">
+        <div>
+          <span aria-hidden="true">01</span>
+          <p><strong>先锁定</strong>数字会先变成无法反推的 SHA-256 承诺。</p>
+        </div>
+        <div>
+          <span aria-hidden="true">02</span>
+          <p><strong>后揭晓</strong>确认双方都锁定后，才交换原始数字。</p>
+        </div>
+        <div>
+          <span aria-hidden="true">03</span>
+          <p><strong>不保存</strong>关闭或刷新页面，本次内容就会从设备内存消失。</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer shell">
+      <p>SHA-256 承诺 <span aria-hidden="true">·</span> WebRTC 点对点传输</p>
+      <p>房主请在双方完成前保持页面打开。</p>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <noscript>
+      <div class="noscript">这个工具需要启用 JavaScript 才能让两台设备建立连接。</div>
+    </noscript>
+  </body>
+</html>
