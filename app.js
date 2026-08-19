@@ -58,7 +58,7 @@
   let toastTimer = null;
   let reconnectTimer = null;
   let intentionalRestart = false;
-  let suppressConnectionCloseNotice = false;
+  const suppressedCloseConnections = new WeakSet();
   let roundEpoch = 0;
   let revealTimer = null;
   let roundRevealed = false;
@@ -215,12 +215,35 @@
     }
 
     connection = nextConnection;
+    let opened = false;
+    const pendingTimer = window.setTimeout(() => {
+      if (connection !== nextConnection || opened) return;
+      suppressedCloseConnections.add(nextConnection);
+      connection = null;
+      connectionReady = false;
+      try {
+        nextConnection.close();
+      } catch {
+        // Clearing the slot is sufficient if the transport never opened.
+      }
+      elements.commitButton.disabled = true;
+      if (role === "host") {
+        setConnectionState("connecting", "等待另一位加入", "上次连接超时，原房间链接仍然有效。");
+        elements.shareArea.hidden = false;
+        renderDisconnectedRound();
+      } else {
+        showError("连接房主超时，请检查网络后重试。", true);
+      }
+    }, 12000);
 
     nextConnection.on("open", () => {
+      window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) {
+        suppressedCloseConnections.add(nextConnection);
         nextConnection.close();
         return;
       }
+      opened = true;
       connectionReady = true;
       hideError();
       setConnectionState("connected", "两个人已经连接", "现在可以各自填写并锁定数字。");
@@ -240,19 +263,21 @@
     });
 
     nextConnection.on("close", () => {
+      window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) return;
       connectionReady = false;
       connection = null;
       elements.commitButton.disabled = true;
       setParticipant(elements.remoteParticipant, elements.remoteStatus, "offline", "已离开");
-      if (suppressConnectionCloseNotice) {
-        suppressConnectionCloseNotice = false;
+      if (suppressedCloseConnections.has(nextConnection)) {
+        suppressedCloseConnections.delete(nextConnection);
         return;
       }
       if (role === "host") {
         setConnectionState("connecting", "等待另一位加入", "原房间链接仍然有效，可以请对方重新打开。");
         elements.shareArea.hidden = false;
-        startFreshHostRound();
+        if (opened) startFreshHostRound();
+        else renderDisconnectedRound();
       } else {
         invalidateRound();
         showError("房主已离开，或点对点连接已经中断。", true);
@@ -260,8 +285,26 @@
     });
 
     nextConnection.on("error", () => {
+      window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) return;
-      showError("点对点连接失败，请检查网络后重试。", true);
+      suppressedCloseConnections.add(nextConnection);
+      connectionReady = false;
+      connection = null;
+      try {
+        nextConnection.close();
+      } catch {
+        // The failed transport may already be closed.
+      }
+      elements.commitButton.disabled = true;
+      if (role === "host") {
+        setConnectionState("connecting", "等待另一位加入", "上次连接失败，原房间链接仍然有效。");
+        elements.shareArea.hidden = false;
+        if (opened) startFreshHostRound();
+        else renderDisconnectedRound();
+      } else {
+        invalidateRound();
+        showError("点对点连接失败，请检查网络后重试。", true);
+      }
     });
   }
 
@@ -275,7 +318,7 @@
     switch (message.type) {
       case "busy":
         showError("这个房间已经有两个人了。请让房主新建房间。", false);
-        suppressConnectionCloseNotice = true;
+        if (connection) suppressedCloseConnections.add(connection);
         connection?.close();
         break;
       case "hello":
@@ -607,6 +650,16 @@
 
     nextPeer.on("error", (error) => {
       if (peer !== nextPeer) return;
+      if (!connectionReady && connection) {
+        const pendingConnection = connection;
+        suppressedCloseConnections.add(pendingConnection);
+        connection = null;
+        try {
+          pendingConnection.close();
+        } catch {
+          // The pending transport may already be closed.
+        }
+      }
       if (!intentionalRestart) showError(peerErrorMessage(error), true);
     });
 
@@ -618,7 +671,7 @@
 
   function restart() {
     intentionalRestart = true;
-    suppressConnectionCloseNotice = Boolean(connection);
+    if (connection) suppressedCloseConnections.add(connection);
     window.clearTimeout(reconnectTimer);
     try {
       connection?.close();
