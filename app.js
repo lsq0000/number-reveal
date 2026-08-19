@@ -8,13 +8,22 @@
   const ROOM_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{12}$/u;
   const ROOM_ID_PREFIX = "tongjie-";
   const SHORT_SHARE_BASE = "https://lsq0000.github.io/r/";
-  const PEER_OPTIONS = {
-    debug: 1,
-    config: {
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      sdpSemantics: "unified-plan",
-    },
-  };
+  const CONNECTION_TIMEOUT_MS = 30000;
+  const GUEST_RETRY_DELAYS_MS = [1500, 3000, 6000, 12000];
+  const HOST_ID_RETRY_DELAYS_MS = [800, 1600, 3000, 5000];
+  const RESUME_DEBOUNCE_MS = 250;
+  const DISCONNECTED_GRACE_MS = 2500;
+  const RETRYABLE_PEER_ERROR_TYPES = new Set([
+    "peer-unavailable",
+    "network",
+    "server-error",
+    "socket-error",
+    "socket-closed",
+  ]);
+  // Keep PeerJS's complete default ICE configuration, including TURN relay
+  // fallback. Supplying a custom `config` here would replace it rather than
+  // merge with it.
+  const PEER_OPTIONS = { debug: 1 };
 
   const elements = {
     connectionHeading: document.querySelector("#connection-heading"),
@@ -67,7 +76,15 @@
   let showScheduled = false;
   let toastTimer = null;
   let reconnectTimer = null;
+  let guestRetryTimer = null;
+  let guestRetryAttempt = 0;
+  let guestRetryReason = null;
+  let hostIdRetryTimer = null;
+  let hostIdRetryAttempt = 0;
+  let resumeTimer = null;
+  let connectionHealthTimer = null;
   let intentionalRestart = false;
+  let hostHasOpened = false;
   const suppressedCloseConnections = new WeakSet();
   let roundEpoch = 0;
   let revealTimer = null;
@@ -199,6 +216,45 @@
     setConnectionState("offline", "连接遇到问题", "可以重试；已经锁定的本轮答案不会被上传或保存。");
   }
 
+  function clearGuestRetry(resetAttempts = false) {
+    window.clearTimeout(guestRetryTimer);
+    guestRetryTimer = null;
+    if (resetAttempts) {
+      guestRetryAttempt = 0;
+      guestRetryReason = null;
+    }
+  }
+
+  function scheduleGuestRetry(reason, { immediate = false } = {}) {
+    if (role !== "guest" || intentionalRestart || connectionReady) return;
+    guestRetryReason = reason;
+    if (guestRetryTimer) return;
+
+    if (document.visibilityState === "hidden" || navigator.onLine === false) {
+      hideError();
+      setConnectionState("connecting", "等待网络恢复", "页面回到前台且网络可用后会自动重新连接…");
+      return;
+    }
+
+    if (guestRetryAttempt >= GUEST_RETRY_DELAYS_MS.length) {
+      showError(reason, true);
+      return;
+    }
+
+    const delay = immediate ? 0 : GUEST_RETRY_DELAYS_MS[guestRetryAttempt];
+    guestRetryAttempt += 1;
+    hideError();
+    setConnectionState(
+      "connecting",
+      "正在重新连接",
+      `连接暂时中断，正在自动重试（${guestRetryAttempt}/${GUEST_RETRY_DELAYS_MS.length}）…`,
+    );
+    guestRetryTimer = window.setTimeout(() => {
+      guestRetryTimer = null;
+      restart({ preserveGuestRetry: true, preserveHostRound: true });
+    }, delay);
+  }
+
   function setParticipant(element, statusElement, state, text) {
     element.dataset.state = state;
     statusElement.textContent = text;
@@ -289,10 +345,11 @@
         setConnectionState("connecting", "等待另一位加入", "上次连接超时，原房间链接仍然有效。");
         elements.shareArea.hidden = false;
         renderDisconnectedRound();
+        recoverSession();
       } else {
-        showError("连接房主超时，请检查网络后重试。", true);
+        scheduleGuestRetry("连接房主超时，请检查网络后重试。");
       }
-    }, 12000);
+    }, CONNECTION_TIMEOUT_MS);
 
     nextConnection.on("open", () => {
       window.clearTimeout(pendingTimer);
@@ -304,6 +361,9 @@
       opened = true;
       connectionReady = true;
       questionConfirmed = false;
+      window.clearTimeout(connectionHealthTimer);
+      connectionHealthTimer = null;
+      clearGuestRetry(true);
       hideError();
       setConnectionState("connected", "两个人已经连接", "正在同步房主设置的问题…");
       elements.shareArea.hidden = true;
@@ -325,6 +385,8 @@
     nextConnection.on("close", () => {
       window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) return;
+      window.clearTimeout(connectionHealthTimer);
+      connectionHealthTimer = null;
       connectionReady = false;
       questionConfirmed = false;
       connection = null;
@@ -339,15 +401,18 @@
         elements.shareArea.hidden = false;
         if (opened) startFreshHostRound();
         else renderDisconnectedRound();
+        recoverSession();
       } else {
         invalidateRound();
-        showError("房主已离开，或点对点连接已经中断。", true);
+        scheduleGuestRetry("房主已离开，或点对点连接已经中断。");
       }
     });
 
     nextConnection.on("error", () => {
       window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) return;
+      window.clearTimeout(connectionHealthTimer);
+      connectionHealthTimer = null;
       suppressedCloseConnections.add(nextConnection);
       connectionReady = false;
       questionConfirmed = false;
@@ -363,9 +428,10 @@
         elements.shareArea.hidden = false;
         if (opened) startFreshHostRound();
         else renderDisconnectedRound();
+        recoverSession();
       } else {
         invalidateRound();
-        showError("点对点连接失败，请检查网络后重试。", true);
+        scheduleGuestRetry("点对点连接失败，请检查网络后重试。");
       }
     });
   }
@@ -742,10 +808,27 @@
           showError("短房间码创建失败，请重试。", true);
           return;
         }
+        hostHasOpened = true;
+        hostIdRetryAttempt = 0;
+        window.clearTimeout(hostIdRetryTimer);
+        hostIdRetryTimer = null;
+        if (connectionReady) {
+          elements.shareArea.hidden = true;
+          elements.connectionStatus.textContent = "点对点连接仍在继续；房间服务已经恢复。";
+          return;
+        }
         elements.shareLink.value = makeShareUrl(roomCode);
         elements.shareArea.hidden = false;
         setConnectionState("connecting", "房间已经准备好", "把链接发给对方，然后保持这个页面打开。");
       } else {
+        if (connectionReady) {
+          elements.connectionStatus.textContent = "点对点连接仍在继续；房间服务已经恢复。";
+          return;
+        }
+        if (connection) {
+          setConnectionState("connecting", "正在加入房间", "房间服务已经恢复，正在继续连接房主…");
+          return;
+        }
         const outgoing = nextPeer.connect(invitedHostId, { serialization: "json", reliable: true });
         setupConnection(outgoing);
         setConnectionState("connecting", "正在加入房间", "已经找到信令服务，正在连接房主…");
@@ -763,15 +846,36 @@
 
     nextPeer.on("disconnected", () => {
       if (peer !== nextPeer) return;
+      if (intentionalRestart) return;
+      if (reconnectTimer) return;
       if (connectionReady) {
         elements.connectionStatus.textContent = "点对点连接仍在继续；正在恢复房间服务…";
       }
+      if (role === "guest" && !connectionReady) {
+        if (connection) {
+          const pendingConnection = connection;
+          suppressedCloseConnections.add(pendingConnection);
+          connection = null;
+          try {
+            pendingConnection.close();
+          } catch {
+            // The full peer retry below supersedes the pending transport.
+          }
+        }
+        scheduleGuestRetry("房间服务连接中断，请检查网络后重试。");
+        return;
+      }
       if (!nextPeer.destroyed) {
         reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          if (peer !== nextPeer || nextPeer.destroyed || !nextPeer.disconnected) return;
+          if (document.visibilityState === "hidden" || navigator.onLine === false) return;
           try {
             nextPeer.reconnect();
           } catch {
-            // A later peer error will present the retry action.
+            if (role === "host" && !connectionReady) {
+              restart({ preserveHostRound: true });
+            }
           }
         }, 1200);
       }
@@ -779,19 +883,48 @@
 
     nextPeer.on("error", (error) => {
       if (peer !== nextPeer) return;
-      if (role === "host" && error?.type === "unavailable-id" && !connectionReady && idCollisionAttempts < 4) {
-        idCollisionAttempts += 1;
+      if (role === "host" && error?.type === "unavailable-id" && !connectionReady) {
         intentionalRestart = true;
         try {
           nextPeer.destroy();
         } catch {
           // A failed registration may already be closed.
         }
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
         peer = null;
-        roomCode = createRoomCode();
-        requestedHostId = peerIdFromRoomCode(roomCode);
         intentionalRestart = false;
-        window.setTimeout(initializePeer, 0);
+
+        if (hostHasOpened) {
+          if (hostIdRetryAttempt >= HOST_ID_RETRY_DELAYS_MS.length) {
+            showError("原房间还在释放旧连接，请稍等几秒后重试；已经发出的链接不会改变。", true);
+            elements.shareArea.hidden = false;
+            return;
+          }
+          const delay = HOST_ID_RETRY_DELAYS_MS[hostIdRetryAttempt];
+          hostIdRetryAttempt += 1;
+          elements.shareArea.hidden = false;
+          setConnectionState(
+            "connecting",
+            "正在恢复原房间",
+            `正在保留原链接并重新注册房间（${hostIdRetryAttempt}/${HOST_ID_RETRY_DELAYS_MS.length}）…`,
+          );
+          hostIdRetryTimer = window.setTimeout(() => {
+            hostIdRetryTimer = null;
+            initializePeer();
+          }, delay);
+          return;
+        }
+
+        if (idCollisionAttempts < 4) {
+          idCollisionAttempts += 1;
+          roomCode = createRoomCode();
+          requestedHostId = peerIdFromRoomCode(roomCode);
+          window.setTimeout(initializePeer, 0);
+          return;
+        }
+
+        showError("短房间码创建失败，请重试。", true);
         return;
       }
       if (!connectionReady && connection) {
@@ -804,6 +937,15 @@
           // The pending transport may already be closed.
         }
       }
+      if (role === "guest" && !connectionReady && RETRYABLE_PEER_ERROR_TYPES.has(error?.type)) {
+        invalidateRound();
+        scheduleGuestRetry(peerErrorMessage(error));
+        return;
+      }
+      if (connectionReady && RETRYABLE_PEER_ERROR_TYPES.has(error?.type)) {
+        elements.connectionStatus.textContent = "点对点连接仍在继续；房间服务会在网络恢复后自动重连…";
+        return;
+      }
       if (!intentionalRestart) showError(peerErrorMessage(error), true);
     });
 
@@ -814,27 +956,141 @@
     });
   }
 
-  function restart() {
+  function resetBrokenConnection(message) {
+    const brokenConnection = connection;
+    if (!brokenConnection) return;
+    suppressedCloseConnections.add(brokenConnection);
+    connection = null;
+    connectionReady = false;
+    questionConfirmed = false;
+    window.clearTimeout(connectionHealthTimer);
+    connectionHealthTimer = null;
+    try {
+      brokenConnection.close();
+    } catch {
+      // Local state is already detached from the failed transport.
+    }
+    elements.commitButton.disabled = true;
+
+    if (role === "host") {
+      startFreshHostRound();
+      elements.shareArea.hidden = false;
+      setConnectionState("connecting", "等待另一位加入", "连接已经中断；原房间链接仍然有效。");
+      recoverSession();
+    } else {
+      invalidateRound();
+      renderDisconnectedRound();
+      clearGuestRetry(true);
+      scheduleGuestRetry(message, { immediate: true });
+    }
+  }
+
+  function restart({ preserveGuestRetry = false, preserveHostRound = false } = {}) {
     intentionalRestart = true;
     if (connection) suppressedCloseConnections.add(connection);
     window.clearTimeout(reconnectTimer);
+    window.clearTimeout(hostIdRetryTimer);
+    window.clearTimeout(resumeTimer);
+    window.clearTimeout(connectionHealthTimer);
+    reconnectTimer = null;
+    hostIdRetryTimer = null;
+    resumeTimer = null;
+    connectionHealthTimer = null;
+    clearGuestRetry(!preserveGuestRetry);
     try {
       connection?.close();
       peer?.destroy();
     } catch {
       // The new session below is independent of the old one.
     }
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     connection = null;
     peer = null;
     invalidateRound();
     localRound = emptyLocalRound();
     remoteRound = emptyRemoteRound();
     intentionalRestart = false;
-    if (role === "host") {
+    if (role === "host" && !preserveHostRound) {
       roundNumber += 1;
       roundId = createRoundId();
     }
     initializePeer();
+  }
+
+  function recoverSession() {
+    if (document.visibilityState === "hidden" || navigator.onLine === false) return;
+    window.clearTimeout(resumeTimer);
+    resumeTimer = window.setTimeout(() => {
+      resumeTimer = null;
+      const activePeer = peer;
+      const activeConnection = connection;
+
+      if (connectionReady && activeConnection) {
+        const rtcConnection = activeConnection.peerConnection;
+        const connectionState = rtcConnection?.connectionState;
+        const iceState = rtcConnection?.iceConnectionState;
+        const failed = ["failed", "closed"].includes(connectionState)
+          || ["failed", "closed"].includes(iceState);
+        const disconnected = connectionState === "disconnected" || iceState === "disconnected";
+
+        if (failed) {
+          resetBrokenConnection("与房主的连接已经中断，正在重新连接。");
+          return;
+        }
+
+        window.clearTimeout(connectionHealthTimer);
+        connectionHealthTimer = null;
+        if (disconnected) {
+          connectionHealthTimer = window.setTimeout(() => {
+            connectionHealthTimer = null;
+            if (document.visibilityState === "hidden" || navigator.onLine === false || connection !== activeConnection) return;
+            const currentRtcConnection = activeConnection.peerConnection;
+            const currentConnectionState = currentRtcConnection?.connectionState;
+            const currentIceState = currentRtcConnection?.iceConnectionState;
+            if (["disconnected", "failed", "closed"].includes(currentConnectionState)
+              || ["disconnected", "failed", "closed"].includes(currentIceState)) {
+              resetBrokenConnection("与房主的连接已经中断，正在重新连接。");
+            }
+          }, DISCONNECTED_GRACE_MS);
+        }
+      }
+
+      if (!activePeer || activePeer.destroyed) {
+        if (role === "host") {
+          if (roomQuestion) restart({ preserveHostRound: true });
+        } else {
+          const reason = guestRetryReason ?? "连接已经中断，请重新连接。";
+          clearGuestRetry(true);
+          scheduleGuestRetry(reason, { immediate: true });
+        }
+        return;
+      }
+
+      if (activePeer.disconnected) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        if (role === "guest" && !connectionReady) {
+          const reason = guestRetryReason ?? "房间服务连接中断，请重新连接。";
+          clearGuestRetry(true);
+          scheduleGuestRetry(reason, { immediate: true });
+          return;
+        }
+        setConnectionState("connecting", "正在恢复连接", "页面已恢复，正在重新连接房间服务…");
+        try {
+          activePeer.reconnect();
+        } catch {
+          if (role === "host" && !connectionReady) restart({ preserveHostRound: true });
+        }
+        return;
+      }
+
+      if (role === "guest" && activePeer.open && !connectionReady && !connection) {
+        const reason = guestRetryReason ?? "与房主的连接已经中断，请重新连接。";
+        clearGuestRetry(true);
+        scheduleGuestRetry(reason, { immediate: true });
+      }
+    }, RESUME_DEBOUNCE_MS);
   }
 
   elements.numberForm.addEventListener("submit", (event) => {
@@ -855,12 +1111,26 @@
   elements.nativeShareButton.addEventListener("click", () => {
     void shareRoom();
   });
-  elements.retryButton.addEventListener("click", restart);
+  elements.retryButton.addEventListener("click", () => restart());
   elements.nextRoundButton.addEventListener("click", requestNextRound);
 
   if (navigator.share) elements.nativeShareButton.hidden = false;
 
-  window.addEventListener("beforeunload", () => {
+  window.addEventListener("offline", () => {
+    if (!connectionReady) {
+      setConnectionState("connecting", "网络连接已断开", "网络恢复后会自动重新连接…");
+    } else {
+      elements.connectionStatus.textContent = "网络连接已断开；恢复后会自动检查点对点连接…";
+    }
+  });
+  window.addEventListener("online", recoverSession);
+  window.addEventListener("pageshow", recoverSession);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recoverSession();
+  });
+
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) return;
     try {
       peer?.destroy();
     } catch {

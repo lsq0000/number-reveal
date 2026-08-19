@@ -20,7 +20,7 @@
       integrity="sha384-x0YgkOr/3UOZP2CRDxGW9e0Q+2Qjyr3uJrm4xU32Y7ZCNAo7Cc7bjhrZMi/dwczu"
       crossorigin="anonymous"
     ></script>
-    <script defer src="./app.js?v=2"></script>
+    <script defer src="./app.js?v=3"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">跳到主要内容</a>
@@ -228,7 +228,7 @@
 
     <footer class="site-footer shell">
       <p>SHA-256 承诺 <span aria-hidden="true">·</span> WebRTC 浏览器直连</p>
-      <p>连接元数据由 PeerJS Cloud 和 Google STUN 处理；任一方都可中途退出。</p>
+      <p>连接元数据由 PeerJS Cloud 和 WebRTC ICE 服务处理；直连受限时会尝试 TURN 中继。</p>
     </footer>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

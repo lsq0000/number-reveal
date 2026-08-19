@@ -16,8 +16,9 @@
 
 - 应用不使用账号、数据库、Cookie 或本地存储来持久化答案。
 - 分享链接使用 12 位随机房间码，例如 `https://lsq0000.github.io/r/#7KMQ4WPA3RDX`；房间码放在 URL fragment 中，不会随 GitHub Pages 的 HTTP 请求发送。
-- 两个浏览器通过 PeerJS Cloud 交换连接信令，并通过 Google STUN 发现网络路径；这些服务会处理建立连接所需的网络元数据。
-- 本应用明确不配置 TURN。连接建立后，答案通过加密的 WebRTC DataChannel 在浏览器间直传；某些严格 NAT 网络可能因此无法连接。
+- 两个浏览器通过 PeerJS Cloud 交换连接信令，并使用 PeerJS 1.5.5 的默认 ICE 配置发现网络路径；这些服务会处理建立连接所需的网络元数据。
+- 浏览器会优先尝试 WebRTC 直连；严格 NAT 或限制 UDP 的网络无法直连时，会尝试 PeerJS 默认 TURN 中继。答案始终通过加密的 WebRTC DataChannel 传输。
+- 访客连接失败后会分级自动重试；页面回到前台或网络恢复时，也会自动恢复房间服务。单次点对点连接最多等待 30 秒。
 - 每轮先交换 `SHA-256(roundId, question, value, salt)` 承诺，双方都承诺后才交换答案和随机盐。
 - 这是一种面向自愿参与者的 commit–reveal 流程：它能防止对方看到答案后修改已经承诺的数字，但不能提供有可信裁判的完全公平性。修改过的客户端仍可在收到诚实方揭晓后拒绝发送自己的答案，任何一方也都能中途退出。
 
@@ -38,4 +39,4 @@ python -m http.server 4173 --directory .
 
 ## 第三方服务
 
-PeerJS 客户端通过固定版本的 jsDelivr CDN 加载，并使用 Subresource Integrity 校验。PeerServer Cloud 负责会话元数据与连接候选信令；Google STUN 用于 NAT 穿透。应用没有配置 TURN 中继。
+PeerJS 客户端通过固定版本的 jsDelivr CDN 加载，并使用 Subresource Integrity 校验。PeerServer Cloud 负责会话元数据与连接候选信令；PeerJS 的默认 ICE 配置提供 STUN，并在直连失败时提供公共 TURN 中继。公共服务不提供本应用控制的可用性保证。
