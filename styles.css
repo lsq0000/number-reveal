@@ -284,12 +284,53 @@ h1 {
   border-top: 1px solid var(--line);
 }
 
+.question-form {
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+
+.question-form label,
 .share-area label,
 .number-form label {
   display: block;
   margin-bottom: 8px;
   font-size: 0.82rem;
   font-weight: 750;
+}
+
+.question-input-row {
+  display: grid;
+  gap: 8px;
+}
+
+.question-input-row input {
+  width: 100%;
+  min-width: 0;
+  height: 50px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.question-input-row input:focus {
+  background: white;
+  border-color: var(--green);
+  box-shadow: 0 0 0 4px rgba(23, 107, 84, 0.12);
+}
+
+.question-input-row input[aria-invalid="true"] {
+  border-color: var(--error);
+  box-shadow: 0 0 0 4px rgba(168, 54, 42, 0.1);
+}
+
+.question-input-row .primary-button {
+  min-height: 50px;
+  margin-top: 0;
 }
 
 .share-row {
@@ -845,6 +886,10 @@ a:focus-visible,
 
   .share-row {
     grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .question-input-row {
+    grid-template-columns: minmax(0, 1fr) 170px;
   }
 
   .share-row input {

@@ -1,8 +1,13 @@
 "use strict";
 
 (() => {
-  const PROTOCOL_VERSION = 1;
+  const PROTOCOL_VERSION = 2;
   const REVEAL_DELAY_MS = 900;
+  const ROOM_CODE_LENGTH = 12;
+  const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const ROOM_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{12}$/u;
+  const ROOM_ID_PREFIX = "tongjie-";
+  const SHORT_SHARE_BASE = "https://lsq0000.github.io/r/";
   const PEER_OPTIONS = {
     debug: 1,
     config: {
@@ -23,6 +28,10 @@
     errorBanner: document.querySelector("#errorBanner"),
     errorMessage: document.querySelector("#errorMessage"),
     retryButton: document.querySelector("#retryButton"),
+    questionForm: document.querySelector("#questionForm"),
+    questionInput: document.querySelector("#questionInput"),
+    questionError: document.querySelector("#questionError"),
+    createRoomButton: document.querySelector("#createRoomButton"),
     roundHeading: document.querySelector("#roundHeading"),
     roundBadge: document.querySelector("#roundBadge"),
     localParticipant: document.querySelector("#localParticipant"),
@@ -44,7 +53,8 @@
     toast: document.querySelector("#toast"),
   };
 
-  const invitedHostId = readRoomId();
+  const invitation = readRoomInvitation();
+  const invitedHostId = invitation?.peerId ?? null;
   const role = invitedHostId ? "guest" : "host";
 
   let peer = null;
@@ -62,6 +72,11 @@
   let roundEpoch = 0;
   let revealTimer = null;
   let roundRevealed = false;
+  let roomQuestion = null;
+  let questionConfirmed = false;
+  let roomCode = role === "host" ? createRoomCode() : invitation?.code ?? null;
+  let requestedHostId = role === "host" ? peerIdFromRoomCode(roomCode) : null;
+  let idCollisionAttempts = 0;
 
   function emptyLocalRound() {
     return {
@@ -84,12 +99,31 @@
     };
   }
 
-  function readRoomId() {
+  function readRoomInvitation() {
     const fragment = window.location.hash.slice(1);
     if (!fragment) return null;
-    const params = new URLSearchParams(fragment);
-    const value = params.get("room");
-    return value ? value.trim() : null;
+    if (fragment.startsWith("room=")) {
+      const value = new URLSearchParams(fragment).get("room")?.trim();
+      return value ? { peerId: value, code: null } : null;
+    }
+
+    let code;
+    try {
+      code = decodeURIComponent(fragment).trim().toUpperCase();
+    } catch {
+      return null;
+    }
+    if (!ROOM_CODE_PATTERN.test(code)) return null;
+    return { peerId: peerIdFromRoomCode(code), code };
+  }
+
+  function createRoomCode() {
+    const bytes = crypto.getRandomValues(new Uint8Array(ROOM_CODE_LENGTH));
+    return Array.from(bytes, (byte) => ROOM_CODE_ALPHABET[byte & 31]).join("");
+  }
+
+  function peerIdFromRoomCode(code) {
+    return `${ROOM_ID_PREFIX}${code}`;
   }
 
   function createRoundId() {
@@ -97,10 +131,11 @@
     return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(18)));
   }
 
-  function makeShareUrl(peerId) {
-    const url = new URL(window.location.href);
+  function makeShareUrl(code) {
+    const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+    const url = new URL(isLocal ? window.location.href : SHORT_SHARE_BASE);
     url.search = "";
-    url.hash = `room=${encodeURIComponent(peerId)}`;
+    url.hash = code;
     return url.toString();
   }
 
@@ -121,8 +156,27 @@
     return value;
   }
 
-  async function hashCommitment(activeRoundId, value, salt) {
-    const payload = JSON.stringify([activeRoundId, value, salt]);
+  function normalizeQuestion(rawValue) {
+    const value = String(rawValue).normalize("NFC").trim();
+    const forbiddenControls = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u;
+    if (!value) throw new Error("请输入一个问题。");
+    if (value.length > 120) throw new Error("问题不能超过 120 个字符。");
+    if (forbiddenControls.test(value)) throw new Error("问题中含有不可显示的控制字符，请删掉后重试。");
+    return value;
+  }
+
+  function questionFromMessage(message) {
+    if (typeof message.question !== "string") return null;
+    try {
+      const normalized = normalizeQuestion(message.question);
+      return normalized === message.question ? normalized : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function hashCommitment(activeRoundId, activeQuestion, value, salt) {
+    const payload = JSON.stringify([activeRoundId, activeQuestion, value, salt]);
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
@@ -151,16 +205,19 @@
   }
 
   function renderDisconnectedRound() {
+    elements.roundHeading.textContent = roomQuestion ?? (role === "host" ? "先自定义一个问题" : "正在获取房主的问题");
     elements.roundBadge.textContent = "等待连接";
     elements.roundBadge.classList.remove("is-ready");
+    elements.numberForm.hidden = true;
     elements.commitButton.disabled = true;
     setParticipant(elements.localParticipant, elements.localStatus, "waiting", "待填写");
     setParticipant(elements.remoteParticipant, elements.remoteStatus, "offline", "尚未连接");
   }
 
   function renderReadyRound() {
-    elements.roundHeading.textContent = `第 ${roundNumber} 轮 · 写下你的数字`;
-    elements.roundBadge.textContent = "双方已连接";
+    if (!roomQuestion || !questionConfirmed) return;
+    elements.roundHeading.textContent = roomQuestion;
+    elements.roundBadge.textContent = `第 ${roundNumber} 轮`;
     elements.roundBadge.classList.add("is-ready");
     elements.numberForm.hidden = false;
     elements.waitingPanel.hidden = true;
@@ -184,7 +241,7 @@
     localRound = emptyLocalRound();
     remoteRound = emptyRemoteRound();
     renderReadyRound();
-    elements.numberInput.focus();
+    if (!elements.numberForm.hidden) elements.numberInput.focus();
   }
 
   function invalidateRound() {
@@ -221,6 +278,7 @@
       suppressedCloseConnections.add(nextConnection);
       connection = null;
       connectionReady = false;
+      questionConfirmed = false;
       try {
         nextConnection.close();
       } catch {
@@ -245,15 +303,17 @@
       }
       opened = true;
       connectionReady = true;
+      questionConfirmed = false;
       hideError();
-      setConnectionState("connected", "两个人已经连接", "现在可以各自填写并锁定数字。");
+      setConnectionState("connected", "两个人已经连接", "正在同步房主设置的问题…");
       elements.shareArea.hidden = true;
       elements.joinArea.hidden = role !== "guest";
 
       if (role === "host") {
-        send({ type: "hello", round: roundNumber, roundId });
-        renderReadyRound();
-        elements.numberInput.focus();
+        send({ type: "hello", round: roundNumber, roundId, question: roomQuestion });
+        elements.roundHeading.textContent = roomQuestion;
+        elements.roundBadge.textContent = "正在同步问题";
+        elements.numberForm.hidden = true;
       }
     });
 
@@ -266,6 +326,7 @@
       window.clearTimeout(pendingTimer);
       if (connection !== nextConnection) return;
       connectionReady = false;
+      questionConfirmed = false;
       connection = null;
       elements.commitButton.disabled = true;
       setParticipant(elements.remoteParticipant, elements.remoteStatus, "offline", "已离开");
@@ -289,6 +350,7 @@
       if (connection !== nextConnection) return;
       suppressedCloseConnections.add(nextConnection);
       connectionReady = false;
+      questionConfirmed = false;
       connection = null;
       try {
         nextConnection.close();
@@ -323,10 +385,26 @@
         break;
       case "hello":
         if (role !== "guest" || typeof message.round !== "number" || typeof message.roundId !== "string") return;
+        roomQuestion = questionFromMessage(message);
+        if (!roomQuestion) {
+          showError("房主发送的问题格式无效，请让房主刷新后重试。", false);
+          return;
+        }
+        questionConfirmed = true;
         resetRound(message.round, message.roundId);
-        send({ type: "hello-ack", roundId });
+        send({ type: "hello-ack", roundId, question: roomQuestion });
+        setConnectionState("connected", "两个人已经连接", "问题已同步，现在可以各自填写并锁定数字答案。");
         break;
       case "hello-ack":
+        if (role !== "host") return;
+        if (!isCurrentRound(message) || questionFromMessage(message) !== roomQuestion) {
+          failProtocol("双方收到的问题不一致，请重新连接后再试。");
+          return;
+        }
+        questionConfirmed = true;
+        renderReadyRound();
+        elements.numberInput.focus();
+        setConnectionState("connected", "两个人已经连接", "问题已同步，现在可以各自填写并锁定数字答案。");
         break;
       case "commit":
         await receiveCommit(message);
@@ -347,6 +425,11 @@
         break;
       case "round":
         if (role === "guest" && typeof message.round === "number" && typeof message.roundId === "string") {
+          if (questionFromMessage(message) !== roomQuestion) {
+            failProtocol("下一轮的问题与当前房间不一致，请重新连接后再试。");
+            return;
+          }
+          questionConfirmed = true;
           resetRound(message.round, message.roundId);
         }
         break;
@@ -377,6 +460,7 @@
     if (!isCurrentRound(message) || remoteRound.verified) return;
     const activeEpoch = roundEpoch;
     const activeRoundId = roundId;
+    const activeQuestion = roomQuestion;
     const activeRemoteRound = remoteRound;
     if (!remoteRound.commitment || typeof message.value !== "string" || typeof message.salt !== "string") {
       failProtocol("收到的揭晓数据不完整。");
@@ -396,8 +480,13 @@
       return;
     }
 
-    const expected = await hashCommitment(activeRoundId, message.value, message.salt);
-    if (roundEpoch !== activeEpoch || roundId !== activeRoundId || remoteRound !== activeRemoteRound) return;
+    const expected = await hashCommitment(activeRoundId, activeQuestion, message.value, message.salt);
+    if (
+      roundEpoch !== activeEpoch
+      || roundId !== activeRoundId
+      || roomQuestion !== activeQuestion
+      || remoteRound !== activeRemoteRound
+    ) return;
     if (expected !== remoteRound.commitment) {
       failProtocol("对方揭晓的数字与先前锁定的承诺不一致。");
       return;
@@ -471,7 +560,7 @@
 
   async function commitNumber(event) {
     event.preventDefault();
-    if (!connectionReady || localRound.commitment || localRound.submitting) return;
+    if (!connectionReady || !questionConfirmed || !roomQuestion || localRound.commitment || localRound.submitting) return;
 
     let value;
     try {
@@ -487,13 +576,19 @@
     localRound.submitting = true;
     const activeEpoch = roundEpoch;
     const activeRoundId = roundId;
+    const activeQuestion = roomQuestion;
     const activeLocalRound = localRound;
     elements.commitButton.disabled = true;
     elements.numberInput.disabled = true;
     elements.inputError.hidden = true;
     const salt = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-    const commitment = await hashCommitment(activeRoundId, value, salt);
-    if (roundEpoch !== activeEpoch || roundId !== activeRoundId || localRound !== activeLocalRound) return;
+    const commitment = await hashCommitment(activeRoundId, activeQuestion, value, salt);
+    if (
+      roundEpoch !== activeEpoch
+      || roundId !== activeRoundId
+      || roomQuestion !== activeQuestion
+      || localRound !== activeLocalRound
+    ) return;
 
     localRound.value = value;
     localRound.salt = salt;
@@ -534,7 +629,7 @@
     const nextRound = roundNumber + 1;
     const nextId = createRoundId();
     resetRound(nextRound, nextId);
-    send({ type: "round", round: nextRound, roundId: nextId });
+    send({ type: "round", round: nextRound, roundId: nextId, question: roomQuestion });
   }
 
   function requestNextRound() {
@@ -546,6 +641,28 @@
       send({ type: "next-request", roundId });
       elements.nextRoundStatus.textContent = "已请求下一轮，正在等待房主同步…";
     }
+  }
+
+  function createRoom(event) {
+    event.preventDefault();
+    if (role !== "host" || peer || roomQuestion) return;
+
+    try {
+      roomQuestion = normalizeQuestion(elements.questionInput.value);
+    } catch (error) {
+      elements.questionInput.setAttribute("aria-invalid", "true");
+      elements.questionError.textContent = error.message;
+      elements.questionError.hidden = false;
+      elements.questionInput.focus();
+      return;
+    }
+
+    elements.questionInput.value = roomQuestion;
+    elements.questionInput.disabled = true;
+    elements.createRoomButton.disabled = true;
+    elements.questionForm.hidden = true;
+    elements.roundHeading.textContent = roomQuestion;
+    initializePeer();
   }
 
   async function copyShareLink() {
@@ -562,7 +679,11 @@
   async function shareRoom() {
     if (!navigator.share) return;
     try {
-      await navigator.share({ title: "同揭", text: "和我各填一个数字，等两个人都提交后一起揭晓。", url: elements.shareLink.value });
+      await navigator.share({
+        title: "同揭",
+        text: `问题：${roomQuestion}。和我各填一个数字，等两个人都提交后一起揭晓。`,
+        url: elements.shareLink.value,
+      });
     } catch (error) {
       if (error.name !== "AbortError") showToast("分享失败，请改用复制链接");
     }
@@ -594,9 +715,11 @@
   }
 
   function initializePeer() {
+    if (role === "host" && !roomQuestion) return;
     window.clearTimeout(reconnectTimer);
     hideError();
     connectionReady = false;
+    questionConfirmed = false;
     renderDisconnectedRound();
     setConnectionState("connecting", role === "host" ? "正在准备房间" : "正在加入房间", "正在连接信令服务…");
     elements.shareArea.hidden = true;
@@ -607,13 +730,19 @@
       return;
     }
 
-    const nextPeer = new window.peerjs.Peer(PEER_OPTIONS);
+    const nextPeer = role === "host"
+      ? new window.peerjs.Peer(requestedHostId, PEER_OPTIONS)
+      : new window.peerjs.Peer(PEER_OPTIONS);
     peer = nextPeer;
 
     nextPeer.on("open", (id) => {
       if (peer !== nextPeer) return;
       if (role === "host") {
-        elements.shareLink.value = makeShareUrl(id);
+        if (id !== requestedHostId) {
+          showError("短房间码创建失败，请重试。", true);
+          return;
+        }
+        elements.shareLink.value = makeShareUrl(roomCode);
         elements.shareArea.hidden = false;
         setConnectionState("connecting", "房间已经准备好", "把链接发给对方，然后保持这个页面打开。");
       } else {
@@ -650,6 +779,21 @@
 
     nextPeer.on("error", (error) => {
       if (peer !== nextPeer) return;
+      if (role === "host" && error?.type === "unavailable-id" && !connectionReady && idCollisionAttempts < 4) {
+        idCollisionAttempts += 1;
+        intentionalRestart = true;
+        try {
+          nextPeer.destroy();
+        } catch {
+          // A failed registration may already be closed.
+        }
+        peer = null;
+        roomCode = createRoomCode();
+        requestedHostId = peerIdFromRoomCode(roomCode);
+        intentionalRestart = false;
+        window.setTimeout(initializePeer, 0);
+        return;
+      }
       if (!connectionReady && connection) {
         const pendingConnection = connection;
         suppressedCloseConnections.add(pendingConnection);
@@ -666,6 +810,7 @@
     nextPeer.on("close", () => {
       if (peer !== nextPeer) return;
       connectionReady = false;
+      questionConfirmed = false;
     });
   }
 
@@ -695,6 +840,11 @@
   elements.numberForm.addEventListener("submit", (event) => {
     void commitNumber(event);
   });
+  elements.questionForm.addEventListener("submit", createRoom);
+  elements.questionInput.addEventListener("input", () => {
+    elements.questionInput.removeAttribute("aria-invalid");
+    elements.questionError.hidden = true;
+  });
   elements.numberInput.addEventListener("input", () => {
     elements.numberInput.removeAttribute("aria-invalid");
     elements.inputError.hidden = true;
@@ -718,5 +868,14 @@
     }
   });
 
-  initializePeer();
+  if (role === "guest") {
+    elements.questionForm.hidden = true;
+    initializePeer();
+  } else {
+    elements.questionForm.hidden = false;
+    elements.joinArea.hidden = true;
+    renderDisconnectedRound();
+    setConnectionState("connecting", "先设置问题", "输入一个问题后，就会生成两个人使用的短房间链接。");
+    elements.questionInput.focus();
+  }
 })();
