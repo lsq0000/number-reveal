@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="两个人各自锁定一个数字，等双方都提交后再同时揭晓。无需登录，本页不保存答案。"
+      content="自定义一个问题，两个人各自锁定数字答案，等双方都提交后再同时揭晓。无需登录，本页不保存答案。"
     />
     <meta name="theme-color" content="#f4f1e8" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
     />
-    <title>同揭 · 两个人同时公布数字</title>
+    <title>同揭 · 自定义问题，同时公布数字</title>
     <link rel="stylesheet" href="./styles.css" />
     <script
       defer
@@ -43,7 +43,7 @@
         <p class="eyebrow"><span aria-hidden="true">↗</span> 两个人 · 一个答案时刻</p>
         <h1 id="page-title">先各自写下，<br />再一起揭晓。</h1>
         <p class="hero-copy">
-          正常使用时，两个人都锁定前不会看到对方数字；锁定后也不能在页面修改。随后一起揭晓。
+          房主先写下问题。正常使用时，两个人都锁定前不会看到对方数字答案；锁定后也不能在页面修改。随后一起揭晓。
         </p>
       </section>
 
@@ -64,6 +64,28 @@
           </div>
         </div>
 
+        <form id="questionForm" class="question-form" novalidate hidden>
+          <label for="questionInput">先自定义双方要回答的问题</label>
+          <div class="question-input-row">
+            <input
+              id="questionInput"
+              name="question"
+              type="text"
+              autocomplete="off"
+              maxlength="120"
+              placeholder="例如：你觉得明天最高气温是多少？"
+              aria-describedby="questionHelp questionError"
+              required
+            />
+            <button id="createRoomButton" class="primary-button" type="submit">
+              <span>创建房间</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+          <p id="questionHelp" class="field-help">1–120 个字符；创建房间后，本房间会一直使用这个问题。</p>
+          <p id="questionError" class="input-error" role="alert" hidden></p>
+        </form>
+
         <div id="shareArea" class="share-area" hidden>
           <label for="shareLink">把这个链接发给另一位参与者</label>
           <div class="share-row">
@@ -80,12 +102,12 @@
               分享
             </button>
           </div>
-          <p id="shareHelp" class="field-help">链接只用于让对方进入当前房间。</p>
+          <p id="shareHelp" class="field-help">短链接只用于让对方进入当前房间；房主需要保持页面打开。</p>
         </div>
 
         <div id="joinArea" class="join-area" hidden>
           <span class="mini-label">受邀加入</span>
-          <p>保持此页面打开，连接成功后就可以填写数字。</p>
+          <p>保持此页面打开，收到房主设置的问题后就可以填写数字。</p>
         </div>
 
         <div id="errorBanner" class="error-banner" role="alert" hidden>
@@ -98,7 +120,7 @@
         <div class="round-header">
           <div>
             <p class="section-kicker">当前回合</p>
-            <h2 id="roundHeading">写下你的数字</h2>
+            <h2 id="roundHeading">等待房主设置问题</h2>
           </div>
           <span id="roundBadge" class="round-badge">等待连接</span>
         </div>
@@ -121,8 +143,8 @@
           </div>
         </div>
 
-        <form id="numberForm" class="number-form" novalidate>
-          <label for="numberInput">你的数字</label>
+        <form id="numberForm" class="number-form" novalidate hidden>
+          <label for="numberInput">你的数字答案</label>
           <div class="number-input-wrap">
             <input
               id="numberInput"
@@ -143,7 +165,7 @@
           </p>
           <p id="inputError" class="input-error" role="alert" hidden></p>
           <button id="commitButton" class="primary-button" type="submit" disabled>
-            <span>锁定我的数字</span>
+            <span>锁定我的答案</span>
             <span aria-hidden="true">→</span>
           </button>
           <p class="lock-note">
@@ -156,7 +178,7 @@
           <div class="waiting-orbit" aria-hidden="true">
             <span></span>
           </div>
-          <h3>你的数字已经锁定</h3>
+          <h3>你的答案已经锁定</h3>
           <p id="waitingMessage" role="status" aria-live="polite">正在等待对方提交…</p>
         </div>
 
@@ -171,11 +193,11 @@
 
           <div class="result-grid" aria-label="双方数字">
             <article class="result-tile result-local">
-              <span>你的数字</span>
+              <span>你的答案</span>
               <strong id="localResult"></strong>
             </article>
             <article class="result-tile result-remote">
-              <span>对方的数字</span>
+              <span>对方的答案</span>
               <strong id="remoteResult"></strong>
             </article>
           </div>
@@ -191,11 +213,11 @@
       <section class="trust-row" aria-label="隐私说明">
         <div>
           <span aria-hidden="true">01</span>
-          <p><strong>先锁定</strong>数字会先变成无法反推的 SHA-256 承诺。</p>
+          <p><strong>先锁定</strong>问题和数字答案会先变成无法反推的 SHA-256 承诺。</p>
         </div>
         <div>
           <span aria-hidden="true">02</span>
-          <p><strong>后揭晓</strong>正常客户端确认双方都锁定后，才交换原始数字。</p>
+          <p><strong>后揭晓</strong>正常客户端确认双方都锁定后，才交换原始数字答案。</p>
         </div>
         <div>
           <span aria-hidden="true">03</span>
