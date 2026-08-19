@@ -13,11 +13,12 @@
 
 ## 隐私与协议
 
-- 页面不使用账号、数据库、Cookie 或本地存储。
+- 应用不使用账号、数据库、Cookie 或本地存储来持久化答案。
 - 房间 ID 放在 URL fragment（`#room=...`）中，不会随 GitHub Pages 的 HTTP 请求发送。
-- 两个浏览器通过 PeerJS Cloud 交换连接所需的信令，答案通过 WebRTC DataChannel 传输。
+- 两个浏览器通过 PeerJS Cloud 交换连接信令，并通过 Google STUN 发现网络路径；这些服务会处理建立连接所需的网络元数据。
+- 本应用明确不配置 TURN。连接建立后，答案通过加密的 WebRTC DataChannel 在浏览器间直传；某些严格 NAT 网络可能因此无法连接。
 - 每轮先交换 `SHA-256(roundId, value, salt)` 承诺，双方都承诺后才交换答案和随机盐。
-- 纯点对点方案不能阻止恶意参与者在承诺后直接退出，但对方不能先看答案再修改自己的已承诺答案。
+- 这是一种面向自愿参与者的 commit–reveal 流程：它能防止对方看到答案后修改已经承诺的数字，但不能提供有可信裁判的完全公平性。修改过的客户端仍可在收到诚实方揭晓后拒绝发送自己的答案，任何一方也都能中途退出。
 
 ## 本地运行
 
@@ -36,4 +37,4 @@ python -m http.server 4173 --directory .
 
 ## 第三方服务
 
-PeerJS 客户端通过固定版本的 jsDelivr CDN 加载，并使用 Subresource Integrity 校验。默认 PeerServer Cloud 负责会话元数据与连接候选信令；连接建立后，应用数据通常在浏览器之间点对点传输。
+PeerJS 客户端通过固定版本的 jsDelivr CDN 加载，并使用 Subresource Integrity 校验。PeerServer Cloud 负责会话元数据与连接候选信令；Google STUN 用于 NAT 穿透。应用没有配置 TURN 中继。

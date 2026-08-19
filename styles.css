@@ -294,11 +294,12 @@ h1 {
 
 .share-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
 }
 
 .share-row input {
+  grid-column: 1 / -1;
   min-width: 0;
   height: 44px;
   padding: 0 12px;
@@ -710,14 +711,14 @@ h1 {
 
 .result-tile strong {
   display: block;
-  overflow: hidden;
+  max-width: 100%;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: clamp(1.35rem, 7vw, 2.3rem);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.07em;
   line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .centered {
@@ -844,6 +845,10 @@ a:focus-visible,
 
   .share-row {
     grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .share-row input {
+    grid-column: auto;
   }
 
   .game-card {

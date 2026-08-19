@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="两个人各自锁定一个数字，等双方都提交后再同时揭晓。无需登录，不保存记录。"
+      content="两个人各自锁定一个数字，等双方都提交后再同时揭晓。无需登录，本页不保存答案。"
     />
     <meta name="theme-color" content="#f4f1e8" />
     <meta
@@ -32,9 +32,9 @@
         </span>
         <span>同揭</span>
       </a>
-      <div class="privacy-chip" aria-label="本次使用不保存记录">
+      <div class="privacy-chip" aria-label="本页面不保存答案">
         <span class="privacy-dot" aria-hidden="true"></span>
-        不留记录
+        本页不保存
       </div>
     </header>
 
@@ -43,7 +43,7 @@
         <p class="eyebrow"><span aria-hidden="true">↗</span> 两个人 · 一个答案时刻</p>
         <h1 id="page-title">先各自写下，<br />再一起揭晓。</h1>
         <p class="hero-copy">
-          看不到对方的答案，也改不了自己的答案。等两个人都锁定后，数字才会同时出现。
+          正常使用时，两个人都锁定前不会看到对方数字；锁定后也不能在页面修改。随后一起揭晓。
         </p>
       </section>
 
@@ -195,18 +195,18 @@
         </div>
         <div>
           <span aria-hidden="true">02</span>
-          <p><strong>后揭晓</strong>确认双方都锁定后，才交换原始数字。</p>
+          <p><strong>后揭晓</strong>正常客户端确认双方都锁定后，才交换原始数字。</p>
         </div>
         <div>
           <span aria-hidden="true">03</span>
-          <p><strong>不保存</strong>关闭或刷新页面，本次内容就会从设备内存消失。</p>
+          <p><strong>不保存</strong>答案不写入账号、数据库或本地存储；刷新即清空。</p>
         </div>
       </section>
     </main>
 
     <footer class="site-footer shell">
-      <p>SHA-256 承诺 <span aria-hidden="true">·</span> WebRTC 点对点传输</p>
-      <p>房主请在双方完成前保持页面打开。</p>
+      <p>SHA-256 承诺 <span aria-hidden="true">·</span> WebRTC 浏览器直连</p>
+      <p>连接元数据由 PeerJS Cloud 和 Google STUN 处理；任一方都可中途退出。</p>
     </footer>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

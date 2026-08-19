@@ -3,7 +3,13 @@
 (() => {
   const PROTOCOL_VERSION = 1;
   const REVEAL_DELAY_MS = 900;
-  const PEER_OPTIONS = { debug: 1 };
+  const PEER_OPTIONS = {
+    debug: 1,
+    config: {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      sdpSemantics: "unified-plan",
+    },
+  };
 
   const elements = {
     connectionHeading: document.querySelector("#connection-heading"),
@@ -53,6 +59,9 @@
   let reconnectTimer = null;
   let intentionalRestart = false;
   let suppressConnectionCloseNotice = false;
+  let roundEpoch = 0;
+  let revealTimer = null;
+  let roundRevealed = false;
 
   function emptyLocalRound() {
     return {
@@ -169,13 +178,21 @@
   }
 
   function resetRound(nextRoundNumber, nextRoundId) {
+    invalidateRound();
     roundNumber = nextRoundNumber;
     roundId = nextRoundId;
     localRound = emptyLocalRound();
     remoteRound = emptyRemoteRound();
-    showScheduled = false;
     renderReadyRound();
     elements.numberInput.focus();
+  }
+
+  function invalidateRound() {
+    roundEpoch += 1;
+    roundRevealed = false;
+    showScheduled = false;
+    window.clearTimeout(revealTimer);
+    revealTimer = null;
   }
 
   function send(message) {
@@ -199,7 +216,11 @@
 
     connection = nextConnection;
 
-    connection.on("open", () => {
+    nextConnection.on("open", () => {
+      if (connection !== nextConnection) {
+        nextConnection.close();
+        return;
+      }
       connectionReady = true;
       hideError();
       setConnectionState("connected", "两个人已经连接", "现在可以各自填写并锁定数字。");
@@ -213,11 +234,13 @@
       }
     });
 
-    connection.on("data", (message) => {
+    nextConnection.on("data", (message) => {
+      if (connection !== nextConnection) return;
       void handleMessage(message);
     });
 
-    connection.on("close", () => {
+    nextConnection.on("close", () => {
+      if (connection !== nextConnection) return;
       connectionReady = false;
       connection = null;
       elements.commitButton.disabled = true;
@@ -231,11 +254,13 @@
         elements.shareArea.hidden = false;
         startFreshHostRound();
       } else {
+        invalidateRound();
         showError("房主已离开，或点对点连接已经中断。", true);
       }
     });
 
-    connection.on("error", () => {
+    nextConnection.on("error", () => {
+      if (connection !== nextConnection) return;
       showError("点对点连接失败，请检查网络后重试。", true);
     });
   }
@@ -275,7 +300,7 @@
         }
         break;
       case "next-request":
-        if (role === "host") startNextRound();
+        if (role === "host" && roundRevealed && isCurrentRound(message)) startNextRound();
         break;
       case "round":
         if (role === "guest" && typeof message.round === "number" && typeof message.roundId === "string") {
@@ -307,6 +332,9 @@
 
   async function receiveReveal(message) {
     if (!isCurrentRound(message) || remoteRound.verified) return;
+    const activeEpoch = roundEpoch;
+    const activeRoundId = roundId;
+    const activeRemoteRound = remoteRound;
     if (!remoteRound.commitment || typeof message.value !== "string" || typeof message.salt !== "string") {
       failProtocol("收到的揭晓数据不完整。");
       return;
@@ -325,7 +353,8 @@
       return;
     }
 
-    const expected = await hashCommitment(roundId, message.value, message.salt);
+    const expected = await hashCommitment(activeRoundId, message.value, message.salt);
+    if (roundEpoch !== activeEpoch || roundId !== activeRoundId || remoteRound !== activeRemoteRound) return;
     if (expected !== remoteRound.commitment) {
       failProtocol("对方揭晓的数字与先前锁定的承诺不一致。");
       return;
@@ -368,9 +397,14 @@
 
   function scheduleReveal() {
     if (showScheduled || !localRound.value || !remoteRound.value) return;
+    const activeEpoch = roundEpoch;
+    const activeRoundId = roundId;
     showScheduled = true;
     elements.waitingMessage.textContent = "核验完成，一起揭晓…";
-    window.setTimeout(renderResult, REVEAL_DELAY_MS);
+    revealTimer = window.setTimeout(() => {
+      revealTimer = null;
+      if (roundEpoch === activeEpoch && roundId === activeRoundId && showScheduled) renderResult();
+    }, REVEAL_DELAY_MS);
   }
 
   function renderResult() {
@@ -382,6 +416,7 @@
     elements.roundBadge.textContent = "已揭晓";
     setParticipant(elements.localParticipant, elements.localStatus, "done", "已揭晓");
     setParticipant(elements.remoteParticipant, elements.remoteStatus, "done", "已揭晓");
+    roundRevealed = true;
     elements.resultHeading.focus();
   }
 
@@ -407,18 +442,22 @@
     }
 
     localRound.submitting = true;
+    const activeEpoch = roundEpoch;
+    const activeRoundId = roundId;
+    const activeLocalRound = localRound;
     elements.commitButton.disabled = true;
     elements.numberInput.disabled = true;
     elements.inputError.hidden = true;
     const salt = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-    const commitment = await hashCommitment(roundId, value, salt);
+    const commitment = await hashCommitment(activeRoundId, value, salt);
+    if (roundEpoch !== activeEpoch || roundId !== activeRoundId || localRound !== activeLocalRound) return;
 
     localRound.value = value;
     localRound.salt = salt;
     localRound.commitment = commitment;
     localRound.submitting = false;
 
-    if (!send({ type: "commit", roundId, commitment })) {
+    if (!send({ type: "commit", roundId: activeRoundId, commitment })) {
       localRound = emptyLocalRound();
       elements.numberInput.disabled = false;
       elements.commitButton.disabled = false;
@@ -436,11 +475,11 @@
 
   function startFreshHostRound() {
     if (role !== "host") return;
+    invalidateRound();
     roundNumber += 1;
     roundId = createRoundId();
     localRound = emptyLocalRound();
     remoteRound = emptyRemoteRound();
-    showScheduled = false;
     elements.numberForm.hidden = false;
     elements.waitingPanel.hidden = true;
     elements.resultPanel.hidden = true;
@@ -456,7 +495,7 @@
   }
 
   function requestNextRound() {
-    if (!connectionReady) return;
+    if (!connectionReady || !roundRevealed) return;
     elements.nextRoundButton.disabled = true;
     if (role === "host") {
       startNextRound();
@@ -525,33 +564,40 @@
       return;
     }
 
-    peer = new window.peerjs.Peer(PEER_OPTIONS);
+    const nextPeer = new window.peerjs.Peer(PEER_OPTIONS);
+    peer = nextPeer;
 
-    peer.on("open", (id) => {
+    nextPeer.on("open", (id) => {
+      if (peer !== nextPeer) return;
       if (role === "host") {
         elements.shareLink.value = makeShareUrl(id);
         elements.shareArea.hidden = false;
         setConnectionState("connecting", "房间已经准备好", "把链接发给对方，然后保持这个页面打开。");
       } else {
-        const outgoing = peer.connect(invitedHostId, { serialization: "json", reliable: true });
+        const outgoing = nextPeer.connect(invitedHostId, { serialization: "json", reliable: true });
         setupConnection(outgoing);
         setConnectionState("connecting", "正在加入房间", "已经找到信令服务，正在连接房主…");
       }
     });
 
-    peer.on("connection", (incoming) => {
+    nextPeer.on("connection", (incoming) => {
+      if (peer !== nextPeer) {
+        incoming.close();
+        return;
+      }
       if (role === "host") setupConnection(incoming);
       else incoming.close();
     });
 
-    peer.on("disconnected", () => {
+    nextPeer.on("disconnected", () => {
+      if (peer !== nextPeer) return;
       if (connectionReady) {
         elements.connectionStatus.textContent = "点对点连接仍在继续；正在恢复房间服务…";
       }
-      if (!peer.destroyed) {
+      if (!nextPeer.destroyed) {
         reconnectTimer = window.setTimeout(() => {
           try {
-            peer.reconnect();
+            nextPeer.reconnect();
           } catch {
             // A later peer error will present the retry action.
           }
@@ -559,11 +605,13 @@
       }
     });
 
-    peer.on("error", (error) => {
+    nextPeer.on("error", (error) => {
+      if (peer !== nextPeer) return;
       if (!intentionalRestart) showError(peerErrorMessage(error), true);
     });
 
-    peer.on("close", () => {
+    nextPeer.on("close", () => {
+      if (peer !== nextPeer) return;
       connectionReady = false;
     });
   }
@@ -580,9 +628,9 @@
     }
     connection = null;
     peer = null;
+    invalidateRound();
     localRound = emptyLocalRound();
     remoteRound = emptyRemoteRound();
-    showScheduled = false;
     intentionalRestart = false;
     if (role === "host") {
       roundNumber += 1;
